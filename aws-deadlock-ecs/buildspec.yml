@@ -1,0 +1,54 @@
+version: 0.2
+
+# ============ BUILD ENVIRONMENT
+
+# AWS_ACCOUNT_ID - Your AWS Account ID
+# will be used to compose the ECR URL
+
+# AWS_REGION - The region name where your ECR is created (e.g. us-east-1) 
+# will be used to compose the ECR URL
+
+# ECR_REPO_NAME - You ECR Repository Name (e.g. my-app) 
+# it should be in the same region as AWS_REGION
+# will be used to compose ECR URL
+# will be used to fetch all images
+
+# ECS_SERVICE_NAME - Service name that is running on ECS
+# will be used at imagesdefinitions.json file to trigger a Task Definition update
+
+# ============
+
+phases:
+  pre_build:
+    commands:
+      - echo Logging into ECS
+      - $(aws ecr get-login --no-include-email --region ${AWS_REGION} | sed 's|https://||')
+      - echo Creating variables
+      - REPOSITORY_URI=${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}
+      - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
+      - IMAGE_TAG=${COMMIT_HASH:=latest}
+  build:
+    commands:
+      - |
+        echo Checking if is first deploy
+        REPOSITORY_IMAGES=$(aws ecr list-images --repository-name ${ECR_REPO_NAME} --max-items 1)
+
+        echo "Building Docker Image"
+        docker build -t $REPOSITORY_URI:latest .
+        docker tag $REPOSITORY_URI:latest $REPOSITORY_URI:$IMAGE_TAG
+        echo Build completed
+
+        echo Pushing to ECR
+        docker push $REPOSITORY_URI:latest
+        docker push $REPOSITORY_URI:$IMAGE_TAG
+
+        # Validate if JSON response has imageDigest value
+        if echo "$REPOSITORY_IMAGES" | grep -q "imageDigest"; then 
+          echo Repository contain images and Deploy Stage should run
+          echo Writing image definitions file...
+          printf '[{"name":"%s","imageUri":"%s"}]' $ECS_SERVICE_NAME $REPOSITORY_URI:$IMAGE_TAG > imagesdefinitions.json
+        else
+          echo Repository DOES NOT contain images, DO NOT run deploy stage
+        fi
+artifacts:
+  files: imagesdefinitions.json
